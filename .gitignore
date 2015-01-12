@@ -1,0 +1,7 @@
+*.pid
+_trial_temp
+*.pyc
+build
+dist
+txbitcoin.egg-info
+docs/_build
