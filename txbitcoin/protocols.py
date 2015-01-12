@@ -12,6 +12,32 @@ class BitcoinProtocol(Protocol):
     def __init__(self):
         self.buffer = StringIO()
         self.observers = {}
+        self.addObserver('version', self.handle_version)
+        self.addObserver('verack', self.handle_verack)
+        self.addObserver('ping', self.handle_ping)
+        self.addObserver('inv', self.handle_inventory)
+
+    def handle_verack(self, message):
+        self.factory.connectionMade()
+
+    def handle_version(self, message):
+        log.msg("Got version %s" % str(message.user_agent))
+        self.send_message(VerAck())
+
+    def handle_ping(self, message):
+        pong = Pong()
+        pong.nonce = message.nonce
+        self.send_message(pong)
+
+    def handle_inventory(self, message):
+        log.msg("Got some inventory: ")
+        log.msg(message)
+
+    def get_blocks(self, blocks):
+        # convert hashes to ints
+        blocks = map(lambda h: int(h, 16), blocks)
+        gb = GetBlocks(blocks)
+        self.send_message(gb)
 
     def addObserver(self, command, func):
         if command not in self.observers:
@@ -19,7 +45,10 @@ class BitcoinProtocol(Protocol):
         self.observers[command].append(func)
 
     def emit(self, command, message):
-        for func in self.observers.get(command, []):
+        if command not in self.observers:
+            log.msg("No handlers for command %s" % command)
+            return
+        for func in self.observers[command]:
             func(message)
 
     def send_message(self, message):
@@ -80,9 +109,3 @@ class BitcoinProtocol(Protocol):
         v = Version()
         v.user_agent = "/txbitcoin:0.0.1/"
         self.send_message(v)
-
-
-class ConnectingBitcoinProtocol(BitcoinProtocol):
-    def connectionMade(self):
-        self.factory.connectionMade()
-        BitcoinProtocol.connectionMade(self)

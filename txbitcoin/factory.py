@@ -2,12 +2,12 @@ from twisted.internet.defer import Deferred
 from twisted.internet.protocol import Protocol, ReconnectingClientFactory
 from twisted.python import log
 
-from txbitcoin.protocols import ConnectingBitcoinProtocol
+from txbitcoin.protocols import BitcoinProtocol
 
 
 class BitcoinClientFactory(ReconnectingClientFactory):
     initialDelay = 0.1
-    protocol = ConnectingBitcoinProtocol
+    protocol = BitcoinProtocol
     
     def __init__(self):
         self.client = None
