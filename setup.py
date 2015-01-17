@@ -8,7 +8,7 @@ setup(
     author="Brian Muller",
     author_email="bamuller@gmail.com",
     license="MIT",
-    url="http://github.com/bmuller/txbitcoin",
+    url="http://github.com/8468/txbitcoin",
     packages=find_packages(),
     requires=["twisted", "protocoin"],
     install_requires=['twisted>=14.0', "protocoin>=0.2"]
