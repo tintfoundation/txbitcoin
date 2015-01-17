@@ -1,111 +1,183 @@
-import os
+"""
+Automated requests we should respond to:
+version -> verack, reject
+ping -> pong, reject
+
+Requests that can be made:
+getaddr -> addr, reject
+getblocks -> inv (block #1 if not found), reject
+getheaders -> headers (block #1 if not found), reject
+mempool -> inv, reject
+getdata -> tx, block, notfound, reject
+"""
+from collections import deque
 
 from twisted.internet.protocol import Protocol
+from twisted.internet import defer, reactor
+from twisted.protocols.policies import TimeoutMixin
 from twisted.python import log
 
-from protocoin.serializers import *
+from protocoin.clients import ProtocolBuffer
+from protocoin.serializers import Pong, VerAck, GetData, GetBlocks,\
+     Version, Inventory, GetAddr, MemPool
+from protocoin import fields
+
+from txbitcoin import utils
+
+######### This should be in protocoin
+from protocoin.serializers import GetBlocksSerializer, MESSAGE_MAPPING
+class GetHeaders(GetBlocks):
+    command = "getheaders"
+class GetHeadersSerializer(GetBlocksSerializer):
+    model_class = GetHeaders
+MESSAGE_MAPPING['getheaders'] = GetHeadersSerializer
+#########
 
 
-class BitcoinProtocol(Protocol):
-    coin = "bitcoin"
+class Command(object):
+    def __init__(self, message, timeout=5):
+        self.message = message
+        self._deferred = defer.Deferred()
+        terror = defer.TimeoutError("Message %s response timeout" % message.command)
+        self.timeoutCall = reactor.callLater(timeout, self.fail, terror)
 
-    def __init__(self):
-        self.buffer = StringIO()
-        self.observers = {}
-        self.addObserver('version', self.handle_version)
-        self.addObserver('verack', self.handle_verack)
-        self.addObserver('ping', self.handle_ping)
-        self.addObserver('inv', self.handle_inventory)
+    def success(self, value):
+        if self.timeoutCall.active():
+            self.timeoutCall.cancel()
+        self._deferred.callback(value)
 
-    def handle_verack(self, message):
-        self.factory.connectionMade()
+    def fail(self, error):
+        if self.timeoutCall.active():
+            self.timeoutCall.cancel()        
+        self._deferred.errback(error)
+
+
+class BitcoinProtocol(Protocol, TimeoutMixin):
+    def __init__(self, timeOut=10, userAgent=None):
+        self.userAgent = userAgent or "/txbitcoin:0.0.1/"
+        self._current = deque()
+        self.persistentTimeOut = self.timeOut = timeOut
+    
+    def makeConnection(self, transport):
+        Protocol.makeConnection(self, transport)
+        self._buffer = ProtocolBuffer()
+
+    def connectionMade(self):
+        v = Version()
+        v.user_agent = self.userAgent
+        binmsg = v.get_message()
+        self.transport.write(binmsg)
+
+    def timeoutConnection(self):
+        """
+        Close the connection in case of timeout.
+        """
+        self._cancelCommands(defer.TimeoutError("Connection timeout"))
+        self.transport.loseConnection()
+
+    def connectionLost(self, reason):
+        self._cancelCommands(reason)
+
+    def _cancelCommands(self, reason):
+        """
+        Cancel all the outstanding commands, making them fail with reason.
+        """
+        while self._current:
+            cmd = self._current.popleft()
+            cmd.fail(reason)
+
+    def send_message(self, message):
+        if not self._current:
+            self.setTimeout(self.persistentTimeOut)
+        log.msg("Sending %s command" % message.command)
+        binmsg = message.get_message()
+        self.transport.write(binmsg)
+        cmd = Command(message)
+        self._current.append(cmd)
+        return cmd._deferred        
+
+    def dataReceived(self, data):
+        self._buffer.write(data)
+        header, message = self._buffer.receive_message()
+        if message is None:
+            return
+
+        log.msg("Recieved %s command" % header.command)
+        mname = "handle_%s" % header.command
+        cmd = getattr(self, mname, None)
+        if cmd is None:
+            return
+
+        self.resetTimeout()
+        cmd(message)
+        # if no pending request, remove timeout        
+        if not self._current:
+            self.setTimeout(None)
 
     def handle_version(self, message):
-        log.msg("Got version %s" % str(message.user_agent))
-        self.send_message(VerAck())
+        binmsg = VerAck().get_message()
+        self.transport.write(binmsg)
 
     def handle_ping(self, message):
         pong = Pong()
         pong.nonce = message.nonce
-        self.send_message(pong)
+        binmsg = pong.get_message()
+        self.transport.write(binmsg)
 
-    def handle_inventory(self, message):
-        log.msg("Got some inventory: ")
-        log.msg(message)
+    def handle_verack(self, message):
+        # our connection isn't ready for messages
+        # until after version -> verack exchange
+        self.factory.connectionMade()
 
-    def get_blocks(self, blocks):
-        # convert hashes to ints
-        blocks = map(lambda h: int(h, 16), blocks)
+    def handle_notfound(self, message):
+        """
+        Not exactly a failure, so return None to
+        the last command's defered.
+        """
+        if self._current:
+            cmd = self._current.popleft()
+            cmd.success(None)
+
+    def _generic_handler(self, message):
+        if self._current:
+            cmd = self._current.popleft()
+            cmd.success(message)
+
+    handle_inv = _generic_handler
+    handle_block = _generic_handler
+    handle_tx = _generic_handler
+    handle_addr = _generic_handler
+    handle_headers = _generic_handler
+
+    def getBlockList(self, blocks):
+        blocks = utils.hashes_to_ints(blocks)
         gb = GetBlocks(blocks)
-        self.send_message(gb)
+        return self.send_message(gb)
 
-    def addObserver(self, command, func):
-        if command not in self.observers:
-            self.observers[command] = []
-        self.observers[command].append(func)
+    def getPeers(self):
+        getaddr = GetAddr()
+        return self.send_message(getaddr)
 
-    def emit(self, command, message):
-        if command not in self.observers:
-            log.msg("No handlers for command %s" % command)
-            return
-        for func in self.observers[command]:
-            func(message)
+    def getHeaders(self, blocks):
+        blocks = utils.hashes_to_ints(blocks)
+        gh = GetHeaders(blocks)
+        return self.send_message(gh)
 
-    def send_message(self, message):
-        log.msg("Sending message %s" % message.command)
-        message_header = MessageHeader(self.coin)
-        message_header_serial = MessageHeaderSerializer()
-        serializer = MESSAGE_MAPPING[message.command]()
-        bin_message = serializer.serialize(message)
-        payload_checksum = MessageHeaderSerializer.calc_checksum(bin_message)
-        message_header.checksum = payload_checksum
-        message_header.length = len(bin_message)
-        message_header.command = message.command
-        self.transport.write(message_header_serial.serialize(message_header))
-        self.transport.write(bin_message)
-        
-    def dataReceived(self, data):
-        self.buffer.write(data)
+    def getMemPool(self):
+        mp = MemPool()
+        return self.send_message(mp)
 
-        # Calculate the size of the buffer
-        self.buffer.seek(0, os.SEEK_END)
-        buffer_size = self.buffer.tell()
+    def getBlockData(self, hashes):
+        return self._getData('MSG_BLOCK', hashes)
 
-        # Check if a complete header is present
-        if buffer_size < MessageHeaderSerializer.calcsize():
-            return
+    def getTxnData(self, hashes):
+        return self._getData('MSG_TX', hashes)
 
-        # Go to the beginning of the buffer
-        self.buffer.reset()
-
-        message_model = None
-        message_header_serial = MessageHeaderSerializer()
-        message_header = message_header_serial.deserialize(self.buffer)
-        total_length = MessageHeaderSerializer.calcsize() + message_header.length
-
-        # Incomplete message
-        if buffer_size < total_length:
-            self.buffer.seek(0, os.SEEK_END)
-            return
-
-        payload = self.buffer.read(message_header.length)
-        remaining = self.buffer.read()
-        self.buffer = StringIO()
-        self.buffer.write(remaining)
-        payload_checksum = MessageHeaderSerializer.calc_checksum(payload)
-
-        # Check if the checksum is valid
-        if payload_checksum != message_header.checksum:
-            raise RuntimeError("Bad Checksum!")
-
-        if message_header.command in MESSAGE_MAPPING:
-            deserializer = MESSAGE_MAPPING[message_header.command]()
-            message_model = deserializer.deserialize(StringIO(payload))
-
-        log.msg("Got message: %s" % message_header.command)
-        self.emit(message_header.command, message_model)
-
-    def connectionMade(self):
-        v = Version()
-        v.user_agent = "/txbitcoin:0.0.1/"
-        self.send_message(v)
+    def _getData(self, type, hashes):
+        gd = GetData()
+        for h in utils.hashes_to_ints(hashes):
+            inv = Inventory()
+            inv.inv_type = fields.INVENTORY_TYPE[type]
+            inv.inv_hash = h
+            gd.inventory.append(inv)
+        return self.send_message(gd)
