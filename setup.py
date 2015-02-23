@@ -10,6 +10,6 @@ setup(
     license="MIT",
     url="http://github.com/8468/txbitcoin",
     packages=find_packages(),
-    requires=["twisted", "protocoin"],
-    install_requires=['twisted>=14.0', "protocoin>=0.2"]
+    requires=["twisted", "coinbits"],
+    install_requires=['twisted>=14.0', "coinbits>=0.2"]
 )

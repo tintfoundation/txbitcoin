@@ -15,38 +15,12 @@ from twisted.internet import defer, reactor
 from twisted.protocols.policies import TimeoutMixin
 from twisted.python import log
 
-from protocoin.clients import ProtocolBuffer
-from protocoin.serializers import Pong, VerAck, GetData, GetBlocks,\
+from coinbits.clients import ProtocolBuffer
+from coinbits.protocol.serializers import Pong, VerAck, GetData, GetBlocks,\
      Version, Inventory, GetAddr, MemPool
-from protocoin import fields
+from coinbits.protocol import fields
 
 from txbitcoin import utils
-
-######### This should be in protocoin
-from protocoin.serializers import Serializer, GetBlocksSerializer, MESSAGE_MAPPING, SerializableMessage
-class GetHeaders(GetBlocks):
-    command = "getheaders"
-class GetHeadersSerializer(GetBlocksSerializer):
-    model_class = GetHeaders
-
-class Reject(SerializableMessage):
-    command = "reject"
-    def __init__(self):
-        self.message = None
-        self.ccode = 0x10 #invalid
-        self.reason = "Unknown"
-        self.data = None
-
-class RejectSerializer(Serializer):
-    model_class = Reject
-    message = fields.VariableStringField()
-    ccode = fields.FixedStringField(1)
-    reason = fields.VariableStringField()
-    data = fields.Hash()
-
-MESSAGE_MAPPING['getheaders'] = GetHeadersSerializer
-MESSAGE_MAPPING['reject'] = RejectSerializer
-#########
 
 
 class MessageRejected(Exception):
@@ -192,6 +166,10 @@ class BitcoinProtocol(Protocol, TimeoutMixin):
         blocks = utils.hashes_to_ints(blocks)
         gb = GetBlocks(blocks)
         return self.send_message(gb, 'inv')
+
+    def sendTransaction(self, tx):
+        binmsg = tx.get_message()
+        self.transport.write(binmsg)
 
     def getPeers(self):
         getaddr = GetAddr()
