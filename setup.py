@@ -11,5 +11,5 @@ setup(
     url="http://github.com/8468/txbitcoin",
     packages=find_packages(),
     requires=["twisted", "coinbits"],
-    install_requires=['twisted>=14.0', "coinbits>=0.2"]
+    install_requires=['twisted>=14.0', "coinbits>=0.3"]
 )

@@ -31,6 +31,13 @@ class BitcoinClientFactory(ReconnectingClientFactory):
         #self.resetDelay()
         return self.client
 
+
+    def disconnect(self):
+        if self.client is not None:
+            self.stopTrying()
+            self.client.transport.loseConnection()
+
+
     def clientConnectionLost(self, connector, reason):
         log.msg("Lost connection to %s - %s (%i retries)" % (self.addr, reason, self.retries))
         self.client = None

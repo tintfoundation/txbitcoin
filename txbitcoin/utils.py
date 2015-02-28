@@ -1,4 +1,3 @@
-
 def hash_to_int(h):
     return h if isinstance(h, int) else int(h, 16)
 

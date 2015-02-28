@@ -15,12 +15,13 @@ from twisted.internet import defer, reactor
 from twisted.protocols.policies import TimeoutMixin
 from twisted.python import log
 
-from coinbits.clients import ProtocolBuffer
+from coinbits.protocol.buffer import ProtocolBuffer
 from coinbits.protocol.serializers import Pong, VerAck, GetData, GetBlocks,\
      Version, Inventory, GetAddr, MemPool
 from coinbits.protocol import fields
 
 from txbitcoin import utils
+from txbitcoin import version as txbitcoin_version
 
 
 class MessageRejected(Exception):
@@ -56,7 +57,7 @@ class Command(object):
 
 class BitcoinProtocol(Protocol, TimeoutMixin):
     def __init__(self, timeOut=10, userAgent=None):
-        self.userAgent = userAgent or "/txbitcoin:0.0.1/"
+        self.userAgent = userAgent or ("/txbitcoin:%s/" % txbitcoin_version)
         self._current = []
         self.persistentTimeOut = self.timeOut = timeOut
     
@@ -104,7 +105,7 @@ class BitcoinProtocol(Protocol, TimeoutMixin):
         if message is None:
             return
 
-        log.msg("[%s] Received %s command" % (self.factory.addr, header.command))
+        #log.msg("[%s] Received %s command" % (self.factory.addr, header.command))
         mname = "handle_%s" % header.command
         cmd = getattr(self, mname, None)
         if cmd is None:

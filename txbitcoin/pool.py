@@ -14,17 +14,69 @@ class NoPeersException(Exception):
     """
 
 
+class InsuficientPeers(Exception):
+    """
+    There aren't enough peers for a consensus.
+    """
+
+
+class FailedConsensus(Exception):
+    """
+    Peers do not agree on results!
+    """
+
+
+def _callWithConsensus(cmd):
+    """
+    Call the given command on consensusSize clients.  Ensure the results
+    are all the same.  The consensusSize is based on the constructor argument.
+    
+    Args:
+        cmd: The command to call (as a string)
+    """
+    def func(self, *args, **kwargs):
+        clients = self.getClients()
+        if len(clients) < self.consensusSize:
+            msg = "Only %i peers, not enough for consensus of %i" % (len(clients), self.consensusSize)
+            raise InsuficientPeers(msg)
+        
+        ds = []
+        for client in random.sample(clients, self.consensusSize):
+            func = getattr(client, cmd)
+            ds.append(func(*args, **kwargs))
+        return defer.gatherResults(ds).addCallback(_ensureConsensus)
+    return func
+
+
+def _ensureConsensus(results):
+    if len(results) == 0:
+        return None
+
+    default = results[0]
+    if len(results) == 1:
+        return default
+
+    for result in results[1:]:
+        if result != default:
+            msg = "Failed consensus: %s != %s" % (result, default)
+            raise FailedConsensus(msg)
+    return default
+
+
 class BitcoinPool(object):
     factory = BitcoinClientFactory
     
-    def __init__(self, maxsize=10):
+    def __init__(self, minsize=5, maxsize=10, consensusSize=5):
+        self.minsize = minsize
         self.maxsize = maxsize
+        self.consensusSize = consensusSize
         self.peerAddys = deque()
         self.factories = []
         self.blacklist = set()
 
         #def runEverySecond():
-        #    print "Connected to", [ c.factory.addr for c in self.getClients() ]
+        #    clients = self.getClients()
+        #    print "Connected to %i peers" % len(clients), [ c.factory.addr for c in clients ]
         #l = task.LoopingCall(runEverySecond)
         #l.start(1.0)
 
@@ -35,13 +87,17 @@ class BitcoinPool(object):
     def getClients(self):
         return [f.client for f in self.factories if f.client is not None]
 
+    def disconnect(self):
+        for f in self.factories:
+            f.disconnect()
+
     def connect(self, addys=None):
         """
         Args:
-            bootAddys: A list of addresses to connect
+            addys: A list of addresses to connect
                        to as the initial set.  More addys
                        will be found as necessary.
-        """
+        """        
         if len(self) == self.maxsize:
             return defer.succeed(self)
 
@@ -49,8 +105,8 @@ class BitcoinPool(object):
             if addy not in self.blacklist and addy not in self.peerAddys:
                 self.peerAddys.append(addy)
 
-        if not self.peerAddys and len(self.getClients()) == 0:
-            raise NoPeersException("Could not find any peers to connect to.")
+        if not self.peerAddys and len(self.getClients()) < self.minsize:
+            raise NoPeersException("Could not find any new peers to connect to.")
 
         if not self.peerAddys:
             return self.getPeers().addCallback(self.connect)
@@ -95,11 +151,7 @@ class BitcoinPool(object):
         d.addCallback(extractIPs)
         return d.addErrback(lambda _: [])
 
-    def getMemPool(self):
-        def mp(_):
-            client = random.choice(self.getClients())
-            return client.getMemPool()
-        return self.connect().addCallback(mp)
-
     def __len__(self):
         return len(self.factories)
+
+    getBlockList = _callWithConsensus('getBlockList')
