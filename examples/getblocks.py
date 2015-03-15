@@ -27,5 +27,5 @@ def getblocks(pool):
 
 p = BitcoinPool()
 p.bootstrap()
-reactor.callLater(1, getblocks, p)
+reactor.callLater(3, getblocks, p)
 reactor.run()

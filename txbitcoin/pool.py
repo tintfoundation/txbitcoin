@@ -1,9 +1,10 @@
 import random
 from collections import deque
 
-from twisted.internet import reactor, defer, task
+from twisted.internet import reactor, defer
 from twisted.python import log
 
+from txbitcoin.functools import impartial, returner
 from txbitcoin.factory import BitcoinClientFactory
 from txbitcoin import dns
 
@@ -30,7 +31,7 @@ def _callWithConsensus(cmd):
     """
     Call the given command on consensusSize clients.  Ensure the results
     are all the same.  The consensusSize is based on the constructor argument.
-    
+
     Args:
         cmd: The command to call (as a string)
     """
@@ -39,7 +40,7 @@ def _callWithConsensus(cmd):
         if len(clients) < self.consensusSize:
             msg = "Only %i peers, not enough for consensus of %i" % (len(clients), self.consensusSize)
             raise InsuficientPeers(msg)
-        
+
         ds = []
         for client in random.sample(clients, self.consensusSize):
             func = getattr(client, cmd)
@@ -65,20 +66,14 @@ def _ensureConsensus(results):
 
 class BitcoinPool(object):
     factory = BitcoinClientFactory
-    
-    def __init__(self, minsize=5, maxsize=10, consensusSize=5):
+
+    def __init__(self, minsize=5, maxsize=10, consensusSize=3):
         self.minsize = minsize
         self.maxsize = maxsize
         self.consensusSize = consensusSize
         self.peerAddys = deque()
         self.factories = []
         self.blacklist = set()
-
-        #def runEverySecond():
-        #    clients = self.getClients()
-        #    print "Connected to %i peers" % len(clients), [ c.factory.addr for c in clients ]
-        #l = task.LoopingCall(runEverySecond)
-        #l.start(1.0)
 
     def bootstrap(self):
         d = dns.getPeers()
@@ -97,7 +92,7 @@ class BitcoinPool(object):
             addys: A list of addresses to connect
                        to as the initial set.  More addys
                        will be found as necessary.
-        """        
+        """
         if len(self) == self.maxsize:
             return defer.succeed(self)
 
@@ -124,14 +119,14 @@ class BitcoinPool(object):
         # return self after first connection is made
         d = defer.DeferredList(ds, fireOnOneCallback=True)
         if len(self) < self.maxsize:
-            d.addCallback(lambda _: self.getPeers()).addCallbacks(self.connect)
-        return d.addCallback(lambda _: self)
+            d.addCallback(impartial(self.getPeers)).addCallbacks(self.connect)
+        return d.addCallback(returner(self))
 
     def connectionFailed(self, factory):
         log.msg("Connection to %s failed, creating new connection" % factory.addr)
         self.blacklist.add(factory.addr)
         self.factories.remove(factory)
-        
+
         # now get next addy, calling getaddr on a client if necessary
         if not self.peerAddys:
             return self.getPeers().addCallback(self.connect)
@@ -139,8 +134,7 @@ class BitcoinPool(object):
 
     def getPeers(self):
         def extractIPs(addrs):
-            ips = [addr.ip_address for addr in addrs]
-            return ips
+            return [addr.ip_address for addr in addrs]
 
         connected = self.getClients()
         if not connected:
@@ -149,7 +143,7 @@ class BitcoinPool(object):
         client = random.choice(connected)
         d = client.getPeers()
         d.addCallback(extractIPs)
-        return d.addErrback(lambda _: [])
+        return d.addErrback(returner([]))
 
     def __len__(self):
         return len(self.factories)

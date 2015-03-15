@@ -16,10 +16,11 @@ from twisted.protocols.policies import TimeoutMixin
 from twisted.python import log
 
 from coinbits.protocol.buffer import ProtocolBuffer
-from coinbits.protocol.serializers import Pong, VerAck, GetData, GetBlocks,\
-     Version, Inventory, GetAddr, MemPool
+from coinbits.protocol.serializers import Pong, VerAck, GetData, GetBlocks, GetHeaders
+from coinbits.protocol.serializers import Version, Inventory, GetAddr, MemPool
 from coinbits.protocol import fields
 
+from txbitcoin.functools import returner
 from txbitcoin import utils
 from txbitcoin import version as txbitcoin_version
 
@@ -30,10 +31,16 @@ class MessageRejected(Exception):
     """
 
 
+def matchCommand(*cmds):
+    def f(msg):
+        return msg.command in cmds
+    return f
+
+
 class Command(object):
-    def __init__(self, message, cmdlist, expect=None, timeout=10):
+    def __init__(self, message, cmdlist, matchFunc=None, timeout=10):
         self.message = message
-        self.expect = expect or []
+        self.matchFunc = matchFunc or returner(True)
         self._deferred = defer.Deferred()
         terror = defer.TimeoutError("Message %s response timeout" % message.command)
         self.timeoutCall = reactor.callLater(timeout, self.fail, terror)
@@ -52,7 +59,7 @@ class Command(object):
         if self in self.cmdlist:
             self.cmdlist.remove(self)
         self._deferred.errback(error)
-        self.called = True        
+        self.called = True
 
 
 class BitcoinProtocol(Protocol, TimeoutMixin):
@@ -60,7 +67,7 @@ class BitcoinProtocol(Protocol, TimeoutMixin):
         self.userAgent = userAgent or ("/txbitcoin:%s/" % txbitcoin_version)
         self._current = []
         self.persistentTimeOut = self.timeOut = timeOut
-    
+
     def makeConnection(self, transport):
         Protocol.makeConnection(self, transport)
         self._buffer = ProtocolBuffer()
@@ -89,13 +96,13 @@ class BitcoinProtocol(Protocol, TimeoutMixin):
             cmd = self._current.pop(0)
             cmd.fail(reason)
 
-    def send_message(self, message, *expect):
+    def send_message(self, message, matchFunc):
         if not self._current:
             self.setTimeout(self.persistentTimeOut)
         log.msg("Sending %s command" % message.command)
         binmsg = message.get_message()
         self.transport.write(binmsg)
-        cmd = Command(message, self._current, expect)
+        cmd = Command(message, self._current, matchFunc)
         self._current.append(cmd)
         return cmd._deferred
 
@@ -105,7 +112,6 @@ class BitcoinProtocol(Protocol, TimeoutMixin):
         if message is None:
             return
 
-        #log.msg("[%s] Received %s command" % (self.factory.addr, header.command))
         mname = "handle_%s" % header.command
         cmd = getattr(self, mname, None)
         if cmd is None:
@@ -132,9 +138,9 @@ class BitcoinProtocol(Protocol, TimeoutMixin):
         # until after version -> verack exchange
         self.factory.connectionMade()
 
-    def _popMatchingCmd(self, cmdname):
+    def _popMatchingCmd(self, message):
         for index, cmd in enumerate(self._current):
-            if cmdname in cmd.expect:
+            if cmd.matchFunc(message):
                 return self._current.pop(index)
         return None
 
@@ -143,17 +149,17 @@ class BitcoinProtocol(Protocol, TimeoutMixin):
         Not exactly a failure, so return None to
         the last command's defered.
         """
-        cmd = self._popMatchingCmd('notfound')
+        cmd = self._popMatchingCmd(message)
         if cmd is not None:
             cmd.success(None)
 
     def handle_reject(self, message):
-        cmd = self._popMatchingCmd('reject')
+        cmd = self._popMatchingCmd(message)
         if cmd is not None:
             cmd.fail(MessageRejected(message.reason))
 
     def _generic_handler(self, message):
-        cmd = self._popMatchingCmd(message.command)
+        cmd = self._popMatchingCmd(message)
         if cmd is not None:
             cmd.success(message)
 
@@ -164,9 +170,12 @@ class BitcoinProtocol(Protocol, TimeoutMixin):
     handle_headers = _generic_handler
 
     def getBlockList(self, blocks):
+        def match(msg):
+            size = len(msg.inventory)
+            return msg.command == 'inv' and size > 2 and size <= 500
         blocks = utils.hashes_to_ints(blocks)
         gb = GetBlocks(blocks)
-        return self.send_message(gb, 'inv')
+        return self.send_message(gb, match)
 
     def sendTransaction(self, tx):
         binmsg = tx.get_message()
@@ -174,28 +183,28 @@ class BitcoinProtocol(Protocol, TimeoutMixin):
 
     def getPeers(self):
         getaddr = GetAddr()
-        return self.send_message(getaddr, 'addr')
+        return self.send_message(getaddr, matchCommand('addr'))
 
     def getHeaders(self, blocks):
         blocks = utils.hashes_to_ints(blocks)
         gh = GetHeaders(blocks)
-        return self.send_message(gh, 'headers')
+        return self.send_message(gh, matchCommand('headers'))
 
     def getMemPool(self):
         mp = MemPool()
-        return self.send_message(mp, 'inv')
+        return self.send_message(mp, matchCommand('inv'))
 
     def getBlockData(self, hashes):
-        return self._getData('MSG_BLOCK', hashes, 'block', 'notfound')
+        return self._getData('MSG_BLOCK', hashes, matchCommand('block', 'notfound'))
 
     def getTxnData(self, hashes):
-        return self._getData('MSG_TX', hashes, 'tx', 'notfound')
+        return self._getData('MSG_TX', hashes, matchCommand('tx', 'notfound'))
 
-    def _getData(self, type, hashes, *expect):
+    def _getData(self, type, hashes, matchCommand):
         gd = GetData()
         for h in utils.hashes_to_ints(hashes):
             inv = Inventory()
             inv.inv_type = fields.INVENTORY_TYPE[type]
             inv.inv_hash = h
             gd.inventory.append(inv)
-        return self.send_message(gd, *expect)
+        return self.send_message(gd, matchCommand)

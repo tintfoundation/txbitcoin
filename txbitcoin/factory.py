@@ -1,5 +1,5 @@
 from twisted.internet.defer import Deferred
-from twisted.internet.protocol import Protocol, ReconnectingClientFactory
+from twisted.internet.protocol import ReconnectingClientFactory
 from twisted.python import log
 
 from txbitcoin.protocols import BitcoinProtocol
@@ -8,7 +8,8 @@ from txbitcoin.protocols import BitcoinProtocol
 class BitcoinClientFactory(ReconnectingClientFactory):
     initialDelay = 0.1
     protocol = BitcoinProtocol
-    
+
+
     def __init__(self, maxRetries = 2):
         """
         Args:
@@ -28,7 +29,7 @@ class BitcoinClientFactory(ReconnectingClientFactory):
         # don't do this - some clients cleanly connect and then
         # disconnect, which sets retries to 0 each time, meaning
         # we'd never stop trying
-        #self.resetDelay()
+        # self.resetDelay()
         return self.client
 
 

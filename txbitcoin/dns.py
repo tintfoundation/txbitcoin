@@ -1,4 +1,5 @@
 import socket
+import random
 
 from twisted.internet import defer
 from twisted.names import client, dns
@@ -8,27 +9,26 @@ SEEDS = [ "dnsseed.bluematt.me", "dnsseed.bitcoin.dashjr.org",
           "seed.bitcoinstats.com", "bitseed.xf2.org" ]
 
 
-class DNSPeerFinder(object):
-    def __init__(self, seeds=None):
-        self.seeds = seeds or SEEDS
-        self.peers = set()
+def _parsePeers(records):
+    addresses = []
+    for record in records:
+        answers, authority, additional = record
+        addresses += answers
 
-    def find(self):
-        ds = map(client.lookupAddress, self.seeds)
-        d = defer.gatherResults(ds)
-        return d.addCallback(self._setPeers)
+    peers = set()
+    for answer in addresses:
+        if answer.type == dns.A:
+            ip = socket.inet_ntop(socket.AF_INET, answer.payload.address)
+            peers.add(ip)
 
-    def _setPeers(self, records):
-        addresses = []
-        for record in records:
-            answers, authority, additional = record
-            addresses += answers
-            
-        for answer in addresses:
-            if answer.type == dns.A:
-                ip = socket.inet_ntop(socket.AF_INET, answer.payload.address)
-                self.peers.add(ip)
-        return self.peers
+    # shake it up!  This means our list will change on each call
+    peers = list(peers)
+    random.shuffle(peers)
+    print peers
+    return peers
 
-def getPeers():
-    return DNSPeerFinder().find()
+
+def getPeers(seeds=None):
+    ds = map(client.lookupAddress, seeds or SEEDS)
+    d = defer.gatherResults(ds)
+    return d.addCallback(_parsePeers)
